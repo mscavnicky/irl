@@ -1,0 +1,351 @@
+import random
+
+from common import take, accumulate, pairwise
+from common import coinflip
+from common import std
+
+"""
+irl - Iterative Rule Learning
+
+Implementation of algoritm by Aguillar (1993).
+"""
+
+class DictionaryData(object):
+    "Data provided as a list of dictionaries."
+    def __init__(self, data):
+        self.data = data
+
+    def count(self):
+        return len(self.data)
+
+    def get(self, index):
+        return self.data[index]
+
+    def find(self, key):
+        return (item.get(key) for item in self.data)
+
+    def match(self, predicates):
+        "Find records matching to conjuction of predicates."
+        for item in self.data:
+            matches = all(predicate.matches(item[predicate.attribute.name]) for predicate in predicates)
+            if matches:
+                yield item
+
+
+class NumericAttribute(object):
+    def __init__(self, data, name):
+        self.name = name
+
+        values = list(data.find(name))
+        self.lower_bound = min(values)
+        self.upper_bound = max(values)
+        self.range = self.upper_bound - self.lower_bound
+        self.std = std(values)
+
+    def __str__(self):
+        return "%s: (%f, %f)" % (self.name, self.lower_bound, self.upper_bound)
+    def __repr__(self):
+        return self.__str__()
+
+class CategoricAttribute(object):
+    def __init__(self, data, name):
+        self.name = name
+        self.values = set(data.find(name))
+        self.range = len(self.values)
+
+    def __str__(self):
+        return "%s: %s" % (self.name, self.values)
+    def __repr__(self):
+        return self.__str__()
+
+
+
+class NumericPredicate(object):
+    """
+    Interval predicate is true if the value of an attribute is in the interval.
+    """
+    def __init__(self, attribute, lower_bound, upper_bound):
+        self.attribute = attribute
+        self.lower_bound = lower_bound
+        self.upper_bound = upper_bound
+
+    def matches(self, value):
+        return self.lower_bound <= value <= self.upper_bound
+
+    def is_empty(self):
+        return self.lower_bound > self.upper_bound
+
+    def is_true(self):
+        is_lower = self.lower_bound <= self.attribute.lower_bound 
+        is_upper = self.upper_bound >= self.attribute.upper_bound
+        return is_lower and is_upper
+
+    def __str__(self):
+        return "%s in (%.3f, %.3f)" % (self.attribute.name, self.lower_bound, self.upper_bound)
+
+class CategoricPredicate(object):
+    """
+    Set predicate is true if the values of the attributes belong to the set of values.
+    """
+    def __init__(self, attribute, values):
+        self.attribute = attribute
+        self.values = set(values)
+
+    def matches(self, value):
+        return value in self.values
+
+    def is_empty(self):
+        return not self.values
+
+    def is_true(self):
+        return len(self.values) == len(self.attribute.values)
+
+    def __str__(self):
+        return "%s in %s" % (self.attribute.name, self.values)
+
+class Rule(object):
+    """
+    Rule is a conjunction of predicates.
+    Predicates are given as a list for each attribute.
+    None is a valid predicate which is understood as a wildcard.
+    A rule therefore specifies a hypercube in the search space.
+    """
+    def __init__(self, predicates):
+        self.predicates = predicates
+        self.fitness = None
+        self.evaluation = None
+
+    def is_empty(self):
+        "Checks if any of the predicates is empty."
+        return any(predicate.is_empty() for predicate in self.predicates)
+
+    def __str__(self):
+        rule_str = (predicate.__str__() for predicate in self.predicates)
+        return "%.3f - %s - %s" % (self.fitness, self.evaluation, ' ^ '.join(rule_str))
+        
+
+class PopulationGenerator(object):
+    """Generates the initial population of rules."""
+    def generate(self, data, attributes, population_size):
+        random_indexes = random.sample(xrange(data.count()), population_size)
+        return (Rule(list(self._generate_predicates(attributes, data.get(i)))) for i in random_indexes)
+
+    def _generate_predicates(self, attributes, item):
+        """Generate predicates for each attribute based on a existing data item."""
+        for attribute in attributes:
+            value = item.get(attribute.name)
+            if isinstance(attribute, NumericAttribute):
+                if value:
+                    lower_bound = value - attribute.range * random.random() / 2
+                    upper_bound = value + attribute.range * random.random() / 2
+                    yield NumericPredicate(attribute, lower_bound, upper_bound)
+                else:
+                    yield NumericPredicate(attribute, attribute.lower_bound, attribute.upper_bound)               
+            elif isinstance(attribute, CategoricAttribute):
+                if value:
+                    k = attribute.range * random.random()
+                    values = random.sample(attribute.values, int(k))
+                    values.append(value)
+                    yield CategoricPredicate(attribute, values)
+                else:
+                    yield CategoricPredicate(attribute, attribute.values)
+            else:
+                raise TypeError
+
+
+class RouletteSelection(object):
+    """
+    Roulette wheel selection operator (generator).
+    Does not work with negative fitness values.
+    """
+    def select(self, population):
+        population_fitness = [rule.fitness for rule in population]
+        print population_fitness
+
+        total_fitness = float(sum(population_fitness))
+        wheel = list(map(lambda x: x / total_fitness, accumulate(population_fitness)))
+        while True:
+            u = random.random()
+            i = next(i for i, p in enumerate(wheel) if u < p)
+            yield population[i]
+    
+
+class TournamentSelection(object):
+    """Tournament selection operator (deterministic)."""
+    def __init__(self, probability):
+        self.probability = probability
+
+    def select(self, population):
+        while True:
+            tournament = random.sample(population, 2)
+            tournament.sort(key=lambda rule: rule.fitness, reverse=True)
+            yield tournament[0] if coinflip(self.probability) else tournament[1]
+
+
+class RuleCrossover(object):
+    """Rule crossover as described by Aguilar (2003)."""
+    def __init__(self, crossover_rate):
+        self.crossover_rate = crossover_rate
+        self.uniform_crossover_rate = 0.5
+
+    def recombinate(self, population):
+        while True:
+            rule1, rule2 = take(2, population)
+            if coinflip(self.crossover_rate):
+                yield self._crossover_rules(rule1, rule2)
+                yield self._crossover_rules(rule1, rule2)
+            else:
+                yield rule1
+                yield rule2
+
+    def _crossover_rules(self, rule1, rule2):
+        "Recombines two parent rules into a single offspring."
+        new_predicates = []
+        for predicate1, predicate2 in zip(rule1.predicates, rule2.predicates):
+            new_predicates.append(self._crossover_predicates(predicate1, predicate2))
+        return Rule(new_predicates)
+            
+    def _crossover_predicates(self, predicate1, predicate2):
+        if isinstance(predicate1, NumericPredicate):
+            lower_bound = random.uniform(predicate1.lower_bound, predicate2.lower_bound)
+            upper_bound = random.uniform(predicate1.upper_bound, predicate2.upper_bound)
+            return NumericPredicate(predicate1.attribute, lower_bound, upper_bound)
+        elif isinstance(predicate1, CategoricPredicate):
+            set_difference1 = predicate1.values - predicate2.values
+            set_difference2 = predicate2.values - predicate1.values
+            for value in set_difference1:
+                if coinflip(self.uniform_crossover_rate):
+                    predicate2.values.add(value)
+                    predicate1.values.remove(value)
+            for value in set_difference2:
+                if coinflip(self.uniform_crossover_rate):
+                    predicate1.values.add(value)
+                    predicate2.values.remove(value)
+        else:
+            raise TypeError
+
+class RuleMutation(object):
+    """
+    Mutation of a numerical attribute is implemented according to Aguilar (2003).
+    This results into a generalization of a rule.
+    Mutation of a categorical attribute is slightly changed.
+    """
+    def __init__(self, mutation_rate):
+        self.mutation_rate = mutation_rate
+
+    def mutate(self, population):
+        "Performs in-place mutation of the items in population."
+        for rule in population:
+            for predicate in rule.predicates:
+                if coinflip(self.mutation_rate):
+                    self._mutate_predicate(predicate)
+            yield rule
+
+    def _mutate_predicate(self, predicate):
+        attribute = predicate.attribute
+        if isinstance(predicate, NumericPredicate):
+            if coinflip(0.5):
+                predicate.lower_bound -= 0.05 * attribute.std * random.random()
+            else:
+                predicate.upper_bound += 0.05 * attribute.std * random.random()
+        elif isinstance(predicate, CategoricPredicate):
+            value = random.choice(attributes.values)
+            if value in predicate.values:
+                predicate.values.remove(value)
+            else:
+                predicate.add(value)
+        else:
+            raise TypeError
+
+
+class AttributeFitnessFunction(object):
+    def __init__(self, attribute_name, attribute_value):
+        self.attribute_name = attribute_name
+        self.attribute_value = attribute_value
+
+    def evaluate(self, data, rule):
+        correct = 0
+        incorrect = 0
+        support = 0
+        matching_items = data.match(rule.predicates)
+        for item in matching_items:
+            support += 1
+            if item[self.attribute_name] == self.attribute_value:
+                correct += 1
+            else:
+                incorrect += 1
+
+        fitness = correct - incorrect
+        return fitness, (support, correct, incorrect)
+
+
+class IterativeRuleLearning(object):
+    """
+    Initializes IterativeRuleLearning using provided keyword arguments.
+
+    Required arguments:
+        'data' - a list of dictionaries containing training data
+        'attributes' - a list of Attribute object specifying attributes for rules
+        'fitness_function' - a fitness function to evaluate goodness of rules
+        'population_generator' - generate the initial population
+        'selection_operator' - selection operator for the rules
+        'crossover_operators' - a list of crossover operators
+        'mutation_operators' - a list of mutation operators        
+
+    Optional arguments:
+        'min_support' - minimum percent of data for a rule needs to cover (default 0.01)
+        'max_generations' - maximum amount of generations (default 100)
+        'population_size' - the size of evolved population (default 10)
+        'elitism_level' - number of best individuals to be copied to next generation (default 1)
+
+    Rules competing in the single run of the algorithm all need to use the same attributes.
+    However some rules can be given a don't care attribute.
+    """
+    def __init__(self, data, attributes, **kwargs):
+        self.data = data
+        self.attributes = attributes
+        self.fitness_function = kwargs['fitness_function']
+        self.population_generator = kwargs['population_generator']
+        self.selection_operator = kwargs['selection_operator']
+        self.crossover_operator = kwargs['crossover_operator']
+        self.mutation_operator = kwargs['mutation_operator']     
+
+        self.max_generations = kwargs.get('max_generations', 50)
+        self.population_size = kwargs.get('population_size', 20)
+        self.elitism_level = kwargs.get('elitism_level', 1)
+
+    def update_fitness(self, population):
+        best = 0
+        for rule in population:
+            if not rule.fitness:
+                rule.fitness, rule.evaluation = self.fitness_function.evaluate(self.data, rule)
+                print rule   
+            if rule.fitness > best:
+                best = rule.fitness
+        return best
+
+    def mine_rule(self):
+        population = list(self.population_generator.generate(self.data, self.attributes, self.population_size))
+
+        generation = 0
+        while generation < self.max_generations:
+            generation += 1
+            
+            best = self.update_fitness(population)
+            print 'Generation %d - Best %d.' % (generation,  best)
+
+            sorted_population = sorted(population, key=lambda rule: rule.fitness, reverse=True)
+            elite_population = take(self.elitism_level, sorted_population)
+
+            new_population = self.selection_operator.select(population)
+            new_population = self.crossover_operator.recombinate(new_population)
+            new_population = self.mutation_operator.mutate(new_population)
+
+            new_population = (rule for rule in new_population if not rule.is_empty())
+            new_population = take(self.population_size - self.elitism_level, new_population)           
+            
+            new_population.extend(elite_population)
+            
+            population = new_population
+
+        return population

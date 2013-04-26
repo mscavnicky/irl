@@ -1,4 +1,4 @@
-py-irl
-======
+irl
+===
 
 Iterative Rule Learning
