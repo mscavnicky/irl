@@ -61,9 +61,7 @@ class CategoricAttribute(object):
 
 
 class NumericPredicate(object):
-    """
-    Interval predicate is true if the value of an attribute is in the interval.
-    """
+    "Interval predicate is true if the value of an attribute is in the interval."
     def __init__(self, attribute, lower_bound, upper_bound):
         self.attribute = attribute
         self.lower_bound = lower_bound
@@ -107,7 +105,6 @@ class Rule(object):
     """
     Rule is a conjunction of predicates.
     Predicates are given as a list for each attribute.
-    None is a valid predicate which is understood as a wildcard.
     A rule therefore specifies a hypercube in the search space.
     """
     def __init__(self, predicates):
@@ -125,13 +122,13 @@ class Rule(object):
         
 
 class PopulationGenerator(object):
-    """Generates the initial population of rules."""
-    def generate(self, data, attributes, population_size):
+    "Generates the initial population of rules."
+     def generate(self, data, attributes, population_size):
         random_indexes = random.sample(xrange(data.count()), population_size)
         return (Rule(list(self._generate_predicates(attributes, data.get(i)))) for i in random_indexes)
 
     def _generate_predicates(self, attributes, item):
-        """Generate predicates for each attribute based on a existing data item."""
+        "Generate predicates for each attribute based on a existing data item."
         for attribute in attributes:
             value = item.get(attribute.name)
             if isinstance(attribute, NumericAttribute):
@@ -160,8 +157,6 @@ class RouletteSelection(object):
     """
     def select(self, population):
         population_fitness = [rule.fitness for rule in population]
-        print population_fitness
-
         total_fitness = float(sum(population_fitness))
         wheel = list(map(lambda x: x / total_fitness, accumulate(population_fitness)))
         while True:
@@ -171,7 +166,7 @@ class RouletteSelection(object):
     
 
 class TournamentSelection(object):
-    """Tournament selection operator (deterministic)."""
+    "Tournament selection operator (deterministic)."
     def __init__(self, probability):
         self.probability = probability
 
@@ -183,7 +178,7 @@ class TournamentSelection(object):
 
 
 class RuleCrossover(object):
-    """Rule crossover as described by Aguilar (2003)."""
+    "Rule crossover as described by Aguilar (2003)."
     def __init__(self, crossover_rate):
         self.crossover_rate = crossover_rate
         self.uniform_crossover_rate = 0.5
@@ -264,17 +259,15 @@ class AttributeFitnessFunction(object):
         self.attribute_value = attribute_value
 
     def evaluate(self, data, rule):
-        correct = 0
-        incorrect = 0
-        support = 0
+        correct = incorrect = 0
         matching_items = data.match(rule.predicates)
         for item in matching_items:
-            support += 1
             if item[self.attribute_name] == self.attribute_value:
                 correct += 1
             else:
                 incorrect += 1
 
+        support = correct + incorrect
         fitness = correct - incorrect
         return fitness, (support, correct, incorrect)
 
@@ -310,19 +303,21 @@ class IterativeRuleLearning(object):
         self.crossover_operator = kwargs['crossover_operator']
         self.mutation_operator = kwargs['mutation_operator']     
 
-        self.max_generations = kwargs.get('max_generations', 50)
-        self.population_size = kwargs.get('population_size', 20)
+        self.max_generations = kwargs.get('max_generations', 30)
+        self.population_size = kwargs.get('population_size', 30)
         self.elitism_level = kwargs.get('elitism_level', 1)
 
     def update_fitness(self, population):
-        best = 0
         for rule in population:
             if not rule.fitness:
                 rule.fitness, rule.evaluation = self.fitness_function.evaluate(self.data, rule)
-                print rule   
-            if rule.fitness > best:
-                best = rule.fitness
-        return best
+
+    def best_fitness(self, population):
+        best_fitness, best_evaluation = float("-inf"), None
+        for rule in population:
+            if best_fitness < rule.fitness:
+                best_fitness, best_evaluation = rule.fitness, rule.evaluation
+        return best_fitness, best_evaluation
 
     def mine_rule(self):
         population = list(self.population_generator.generate(self.data, self.attributes, self.population_size))
@@ -330,9 +325,10 @@ class IterativeRuleLearning(object):
         generation = 0
         while generation < self.max_generations:
             generation += 1
+            self.update_fitness(population)
             
-            best = self.update_fitness(population)
-            print 'Generation %d - Best %d.' % (generation,  best)
+            best_fitness, best_evaluation = self.best_fitness(population)
+            print 'Generation %d - Best %d, %s.' % (generation,  best_fitness, best_evaluation)
 
             sorted_population = sorted(population, key=lambda rule: rule.fitness, reverse=True)
             elite_population = take(self.elitism_level, sorted_population)
