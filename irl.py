@@ -1,4 +1,4 @@
-import random
+from random import random, randint, sample, choice, uniform
 
 from common import take, accumulate, pairwise
 from common import coinflip
@@ -27,7 +27,7 @@ class DictionaryData(object):
     def match(self, predicates):
         "Find records matching to conjuction of predicates."
         for item in self.data:
-            matches = all(predicate.matches(item[predicate.attribute.name]) for predicate in predicates)
+            matches = all(predicate.matches(item) for predicate in predicates)
             if matches:
                 yield item
 
@@ -59,47 +59,38 @@ class CategoricAttribute(object):
         return self.__str__()
 
 
-
 class NumericPredicate(object):
     "Interval predicate is true if the value of an attribute is in the interval."
-    def __init__(self, attribute, lower_bound, upper_bound):
-        self.attribute = attribute
+    def __init__(self, attribute_name, lower_bound, upper_bound):
+        self.attribute_name = attribute_name
         self.lower_bound = lower_bound
         self.upper_bound = upper_bound
 
-    def matches(self, value):
+    def matches(self, item):
+        value = item[self.attribute_name]
         return self.lower_bound <= value <= self.upper_bound
 
     def is_empty(self):
         return self.lower_bound > self.upper_bound
 
-    def is_true(self):
-        is_lower = self.lower_bound <= self.attribute.lower_bound 
-        is_upper = self.upper_bound >= self.attribute.upper_bound
-        return is_lower and is_upper
-
     def __str__(self):
-        return "%s in (%.3f, %.3f)" % (self.attribute.name, self.lower_bound, self.upper_bound)
+        return "%s in (%.3f, %.3f)" % (self.attribute_name, self.lower_bound, self.upper_bound)
 
 class CategoricPredicate(object):
-    """
-    Set predicate is true if the values of the attributes belong to the set of values.
-    """
-    def __init__(self, attribute, values):
-        self.attribute = attribute
-        self.values = set(values)
+    "Set predicate is true if the values of the attributes belong to the set of values."
+    def __init__(self, attribute_name, values):
+        self.attribute_name = attribute_name
+        self.values = values
 
-    def matches(self, value):
+    def matches(self, item):
+        value = item[self.attribute_name]
         return value in self.values
 
     def is_empty(self):
         return not self.values
 
-    def is_true(self):
-        return len(self.values) == len(self.attribute.values)
-
     def __str__(self):
-        return "%s in %s" % (self.attribute.name, self.values)
+        return "%s in %s" % (self.attribute_name, self.values)
 
 class Rule(object):
     """
@@ -121,33 +112,46 @@ class Rule(object):
         return "%.3f - %s - %s" % (self.fitness, self.evaluation, ' ^ '.join(rule_str))
         
 
-class PopulationGenerator(object):
+class PredicatePopulationGenerator(object):
+    def __init__(self, predicate):
+        self.predicate = predicate
+
     "Generates the initial population of rules."
-     def generate(self, data, attributes, population_size):
-        random_indexes = random.sample(xrange(data.count()), population_size)
-        return (Rule(list(self._generate_predicates(attributes, data.get(i)))) for i in random_indexes)
+    def generate(self, data, attributes, population_size):
+        sample_items = take(population_size, self._sample_items(data))
+        return (Rule(list(self._generate_predicates(attributes, item))) for item in sample_items)
+
+    def _sample_items(self, data):
+        n = data.count()
+        while True:
+            item = data.get(randint(0, n-1))
+            if self.predicate.matches(item):
+                yield item
 
     def _generate_predicates(self, attributes, item):
-        "Generate predicates for each attribute based on a existing data item."
         for attribute in attributes:
-            value = item.get(attribute.name)
-            if isinstance(attribute, NumericAttribute):
-                if value:
-                    lower_bound = value - attribute.range * random.random() / 2
-                    upper_bound = value + attribute.range * random.random() / 2
-                    yield NumericPredicate(attribute, lower_bound, upper_bound)
-                else:
-                    yield NumericPredicate(attribute, attribute.lower_bound, attribute.upper_bound)               
-            elif isinstance(attribute, CategoricAttribute):
-                if value:
-                    k = attribute.range * random.random()
-                    values = random.sample(attribute.values, int(k))
-                    values.append(value)
-                    yield CategoricPredicate(attribute, values)
-                else:
-                    yield CategoricPredicate(attribute, attribute.values)
+            yield self._generate_predicate(attribute, item)
+
+    def _generate_predicate(self, attribute, item):
+        "Generate predicates for each attribute based on a existing data item."
+        value = item.get(attribute.name)
+        if isinstance(attribute, NumericAttribute):
+            if value:
+                lower_bound = value - attribute.range * random() / 2
+                upper_bound = value + attribute.range * random() / 2
+                return NumericPredicate(attribute.name, lower_bound, upper_bound)
             else:
-                raise TypeError
+                return NumericPredicate(attribute.name, attribute.lower_bound, attribute.upper_bound)               
+        elif isinstance(attribute, CategoricAttribute):
+            if value:
+                k = attribute.range * random()
+                values = sample(attribute.values, int(k))
+                values.append(value)
+                return CategoricPredicate(attribute.name, values)
+            else:
+                return CategoricPredicate(attribute.name, attribute.values)
+        else:
+            raise TypeError
 
 
 class RouletteSelection(object):
@@ -160,7 +164,7 @@ class RouletteSelection(object):
         total_fitness = float(sum(population_fitness))
         wheel = list(map(lambda x: x / total_fitness, accumulate(population_fitness)))
         while True:
-            u = random.random()
+            u = random()
             i = next(i for i, p in enumerate(wheel) if u < p)
             yield population[i]
     
@@ -172,7 +176,7 @@ class TournamentSelection(object):
 
     def select(self, population):
         while True:
-            tournament = random.sample(population, 2)
+            tournament = sample(population, 2)
             tournament.sort(key=lambda rule: rule.fitness, reverse=True)
             yield tournament[0] if coinflip(self.probability) else tournament[1]
 
@@ -202,9 +206,9 @@ class RuleCrossover(object):
             
     def _crossover_predicates(self, predicate1, predicate2):
         if isinstance(predicate1, NumericPredicate):
-            lower_bound = random.uniform(predicate1.lower_bound, predicate2.lower_bound)
-            upper_bound = random.uniform(predicate1.upper_bound, predicate2.upper_bound)
-            return NumericPredicate(predicate1.attribute, lower_bound, upper_bound)
+            lower_bound = uniform(predicate1.lower_bound, predicate2.lower_bound)
+            upper_bound = uniform(predicate1.upper_bound, predicate2.upper_bound)
+            return NumericPredicate(predicate1.attribute_name, lower_bound, upper_bound)
         elif isinstance(predicate1, CategoricPredicate):
             set_difference1 = predicate1.values - predicate2.values
             set_difference2 = predicate2.values - predicate1.values
@@ -228,23 +232,22 @@ class RuleMutation(object):
     def __init__(self, mutation_rate):
         self.mutation_rate = mutation_rate
 
-    def mutate(self, population):
+    def mutate(self, population, attributes):
         "Performs in-place mutation of the items in population."
         for rule in population:
-            for predicate in rule.predicates:
+            for attribute, predicate in zip(attributes, rule.predicates):
                 if coinflip(self.mutation_rate):
-                    self._mutate_predicate(predicate)
+                    self._mutate_predicate(predicate, attribute)
             yield rule
 
-    def _mutate_predicate(self, predicate):
-        attribute = predicate.attribute
+    def _mutate_predicate(self, predicate, attribute):
         if isinstance(predicate, NumericPredicate):
             if coinflip(0.5):
-                predicate.lower_bound -= 0.05 * attribute.std * random.random()
+                predicate.lower_bound -= 0.05 * attribute.std * random()
             else:
-                predicate.upper_bound += 0.05 * attribute.std * random.random()
+                predicate.upper_bound += 0.05 * attribute.std * random()
         elif isinstance(predicate, CategoricPredicate):
-            value = random.choice(attributes.values)
+            value = choice(attribute.values)
             if value in predicate.values:
                 predicate.values.remove(value)
             else:
@@ -253,16 +256,15 @@ class RuleMutation(object):
             raise TypeError
 
 
-class AttributeFitnessFunction(object):
-    def __init__(self, attribute_name, attribute_value):
-        self.attribute_name = attribute_name
-        self.attribute_value = attribute_value
+class PredicateFitnessFunction(object):
+    def __init__(self, predicate):
+        self.predicate = predicate
 
     def evaluate(self, data, rule):
         correct = incorrect = 0
         matching_items = data.match(rule.predicates)
         for item in matching_items:
-            if item[self.attribute_name] == self.attribute_value:
+            if self.predicate.matches(item):
                 correct += 1
             else:
                 incorrect += 1
@@ -303,8 +305,8 @@ class IterativeRuleLearning(object):
         self.crossover_operator = kwargs['crossover_operator']
         self.mutation_operator = kwargs['mutation_operator']     
 
-        self.max_generations = kwargs.get('max_generations', 30)
-        self.population_size = kwargs.get('population_size', 30)
+        self.max_generations = kwargs.get('max_generations', 40)
+        self.population_size = kwargs.get('population_size', 40)
         self.elitism_level = kwargs.get('elitism_level', 1)
 
     def update_fitness(self, population):
@@ -335,7 +337,7 @@ class IterativeRuleLearning(object):
 
             new_population = self.selection_operator.select(population)
             new_population = self.crossover_operator.recombinate(new_population)
-            new_population = self.mutation_operator.mutate(new_population)
+            new_population = self.mutation_operator.mutate(new_population, self.attributes)
 
             new_population = (rule for rule in new_population if not rule.is_empty())
             new_population = take(self.population_size - self.elitism_level, new_population)           

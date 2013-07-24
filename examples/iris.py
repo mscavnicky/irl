@@ -20,17 +20,19 @@ if __name__ == '__main__':
     attributes=[
         NumericAttribute(data, 'sepal_length'), 
         NumericAttribute(data, 'sepal_width'), 
-        NumericAttribute(data, 'petal_length'), 
+        NumericAttribute(data, 'petal_length'),
         NumericAttribute(data, 'petal_width')
     ]
 
+    predicate = CategoricPredicate('class', {3})
+
     irl = IterativeRuleLearning(
         data, attributes,     
-        population_generator=PopulationGenerator(),
-        fitness_function=AttributeFitnessFunction('class', 1),
+        population_generator=PredicatePopulationGenerator(predicate),
+        fitness_function=PredicateFitnessFunction(predicate),
         selection_operator=TournamentSelection(0.7),
-        crossover_operator=RuleCrossover(0.15),
-        mutation_operator=RuleMutation(0.15)
+        crossover_operator=RuleCrossover(0.1),
+        mutation_operator=RuleMutation(0.3)
     )
 
     irl.mine_rule()
