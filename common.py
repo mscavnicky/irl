@@ -4,14 +4,15 @@ Common helper functions.
 
 import operator
 import random
+import math
 
-from math import sqrt
 from itertools import islice, izip, tee
 
-def std(seq):    
+def std(seq):
+    """Standard deviation of a sample."""
     n = len(seq)
     mean = sum(seq) / n
-    std =  sqrt(sum((x - mean)**2 for x in seq) / n)
+    std = math.sqrt(sum((x - mean)**2 for x in seq) / n)
     return std
 
 def take(n, iterable):
